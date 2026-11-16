@@ -1,0 +1,130 @@
+#ifndef MACHINE_CONFIG_H
+#define MACHINE_CONFIG_H
+
+#include <Arduino.h>
+#include "network/espnow_link.h"
+
+#define MAX_MACHINES 4
+
+// NVS-stable numeric values - DO NOT reorder existing entries.
+// CONN_UART/CONN_WIFI keep the original CONN_WIRED/CONN_WIRELESS numeric values
+// so existing machine configurations in NVS continue to load correctly.
+enum ConnectionType {
+    CONN_UART    = 0,  // Hardware UART (legacy "Wired") - Advance only (needs its 5 V UART-IN header)
+    CONN_WIFI    = 1,  // WiFi WebSocket (legacy "Wireless")
+    CONN_USB_CDC = 2,  // USB serial chip on UART0 via the USB-C jack - Advance and Basic
+    CONN_ESPNOW  = 3   // ESP-NOW direct radio link (FluidNC v4.1.0+; the protocol dates from v4.0.4, which had issues)
+};
+
+// Backwards-compatible aliases for older code that still references the
+// pre-v2 names. New code should use CONN_UART / CONN_WIFI directly.
+#define CONN_WIRED    CONN_UART
+#define CONN_WIRELESS CONN_WIFI
+
+// Convenience predicates
+inline bool connectionIsWireless(ConnectionType t) {
+    return t == CONN_WIFI || t == CONN_ESPNOW;
+}
+inline bool connectionIsSerial(ConnectionType t) {
+    return t == CONN_UART || t == CONN_USB_CDC;
+}
+inline bool espnowIsPaired(const EspNowPairing& p) {
+    static const uint8_t zero[6] = {};
+    return memcmp(p.mac, zero, sizeof(zero)) != 0;
+}
+
+struct MachineConfig {
+    char name[32];
+    ConnectionType connection_type;
+    char ssid[33];           // WiFi SSID (max 32 chars + null)
+    char password[64];       // WiFi password (max 63 chars + null)
+    char fluidnc_url[128];   // FluidNC URL (e.g., "192.168.1.100" or "fluidnc.local")
+    uint16_t websocket_port; // WebSocket port (default 80)
+    uint32_t uart_baud_rate; // CONN_UART: must match FluidNC's uartN baud. CONN_USB_CDC: must match
+                             // FluidNC's `usb_host: baud:`, which sets the Advance's CH340 bridge speed
+    EspNowPairing espnow_pairing;  // CONN_ESPNOW: FluidNC's MAC, key and channel (all zero = not paired)
+    bool is_configured;      // Whether this slot has a valid machine
+    
+    // Jog control defaults
+    float jog_xy_step;       // Default XY step size (mm)
+    float jog_z_step;        // Default Z step size (mm)
+    float jog_a_step;        // Default A step size (mm or degrees)
+    int jog_xy_feed;         // Default XY feed rate (mm/min)
+    int jog_z_feed;          // Default Z feed rate (mm/min)
+    int jog_a_feed;          // Default A feed rate (mm/min or deg/min)
+    int jog_max_xy_feed;     // Max XY feed for joystick (mm/min)
+    int jog_max_z_feed;      // Max Z feed for joystick (mm/min)
+    int jog_max_a_feed;      // Max A feed for joystick (mm/min or deg/min)
+    char jog_xy_steps[64];   // XY step values (comma-separated, e.g., "100,50,10,1,0.1")
+    char jog_z_steps[64];    // Z step values (comma-separated)
+    char jog_a_steps[64];    // A step values (comma-separated)
+    
+    // Probe control defaults
+    int probe_feed_rate;     // Default probe feed rate (mm/min)
+    int probe_max_distance;  // Default max probe distance (mm)
+    int probe_retract;       // Default retract distance (mm)
+    float probe_thickness;   // Default probe thickness (mm, 1 decimal place)
+
+    // Axis configuration - consistent axis_<letter>_enabled naming for X/Y/Z/A
+    bool axis_x_enabled;     // X axis present (disable for reduced-axis machines, e.g. Y/Z-only gantry)
+    bool axis_y_enabled;     // Y axis present (disable for reduced-axis machines, e.g. miter saw fence)
+    bool axis_z_enabled;     // Z axis present (disable for reduced-axis machines)
+    bool axis_a_enabled;     // Enable 4th axis (rotary) support
+    
+    // Constructor with defaults
+    MachineConfig() : connection_type(CONN_WIFI), websocket_port(80), uart_baud_rate(115200), is_configured(false),
+                      jog_xy_step(10.0f), jog_z_step(1.0f), jog_a_step(1.0f),
+                      jog_xy_feed(3000), jog_z_feed(1000), jog_a_feed(1000),
+                      jog_max_xy_feed(3000), jog_max_z_feed(1000), jog_max_a_feed(1000),
+                      probe_feed_rate(100), probe_max_distance(10),
+                      probe_retract(2), probe_thickness(0.0f),
+                      axis_x_enabled(true), axis_y_enabled(true), axis_z_enabled(true), axis_a_enabled(false) {
+        memset(&espnow_pairing, 0, sizeof(espnow_pairing));
+        name[0] = '\0';
+        ssid[0] = '\0';
+        password[0] = '\0';
+        fluidnc_url[0] = '\0';
+        strcpy(jog_xy_steps, "100,50,10,1,0.1");
+        strcpy(jog_z_steps, "50,25,10,1,0.1");
+        strcpy(jog_a_steps, "50,25,10,1,0.1");
+    }
+};
+
+class MachineConfigManager {
+public:
+    // Load all machines from Preferences (with caching)
+    static void loadMachines(MachineConfig machines[MAX_MACHINES]);
+    
+    // Force reload from NVS (clears cache)
+    static void reloadMachines();
+    
+    // Save all machines to Preferences
+    static void saveMachines(const MachineConfig machines[MAX_MACHINES]);
+    
+    // Get a specific machine by index
+    static bool getMachine(int index, MachineConfig &config);
+    
+    // Save a specific machine by index
+    static bool saveMachine(int index, const MachineConfig &config);
+    
+    // Delete a machine (mark as unconfigured)
+    static bool deleteMachine(int index);
+    
+    // Get the currently selected machine index
+    static int getSelectedMachineIndex();
+    
+    // Set the currently selected machine index
+    static void setSelectedMachineIndex(int index);
+    
+    // Get currently selected machine config
+    static bool getSelectedMachine(MachineConfig &config);
+    
+    // Check if machines are configured
+    static bool hasConfiguredMachines();
+    
+private:
+    static MachineConfig cached_machines[MAX_MACHINES];
+    static bool cache_valid;
+};
+
+#endif // MACHINE_CONFIG_H
